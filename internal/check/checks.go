@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 StreamPulse contributors
+
 // Package check implements the CI health checks behind the check command:
 // connectivity, topic, consumer-group, retention, and replication gates that
 // exit 0 when healthy and 1 or 2 when not.

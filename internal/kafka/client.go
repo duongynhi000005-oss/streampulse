@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 StreamPulse contributors
+
 // Package kafka provides the Kafka client wrapper using kafka-go.
 package kafka
 

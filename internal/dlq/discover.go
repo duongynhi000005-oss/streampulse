@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 StreamPulse contributors
+
 // Package dlq implements the dead-letter queue module: discovery of DLQ
 // topics by name convention, message inspection, and replay to the original
 // topic.

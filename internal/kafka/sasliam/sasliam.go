@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 StreamPulse contributors
+
 // Package sasliam implements the AWS MSK IAM SASL mechanism for kafka-go.
 //
 // The mechanism performs the AWS MSK IAM handshake: the client sends an

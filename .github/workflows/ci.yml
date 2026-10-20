@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  license:
+    name: License and dependency checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify module checksums
+        run: go mod verify
+
+      - name: Check SPDX headers
+        run: make license-check
+
+      - name: Check NOTICE lists third-party components
+        run: |
+          test -s NOTICE
+          for module in github.com/charmbracelet/bubbletea github.com/segmentio/kafka-go modernc.org/sqlite github.com/spf13/cobra github.com/prometheus/client_golang; do
+            grep -q "^  $module" NOTICE || { echo "::error::NOTICE is missing $module"; exit 1; }
+          done
+
+  dco:
+    name: DCO sign-off
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: the DCO check walks every commit in the pull request.
+          fetch-depth: 0
+
+      - name: Every commit must be signed off by its author
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -eu
+          # Keep the range resolution inside a guarded command: a failed
+          # substitution in a `for` word list would skip the loop and pass.
+          commits=$(git rev-list --no-merges "$BASE_SHA..$HEAD_SHA") || {
+            echo "::error::Cannot resolve commit range $BASE_SHA..$HEAD_SHA (checkout with fetch-depth: 0)"
+            exit 1
+          }
+          if [ -z "$commits" ]; then
+            echo "::error::No commits found in $BASE_SHA..$HEAD_SHA"
+            exit 1
+          fi
+          failed=0
+          for sha in $commits; do
+            email=$(git log -1 --format=%ae "$sha")
+            signed=$(git log -1 --format=%B "$sha" | awk -v email="$email" '
+              tolower($0) ~ /^signed-off-by: .+ <[^>]+>$/ {
+                addr = tolower($0)
+                sub(/.*</, "", addr)
+                sub(/>.*/, "", addr)
+                if (addr == tolower(email)) found = 1
+              }
+              END { print (found ? "yes" : "no") }')
+            if [ "$signed" != "yes" ]; then
+              echo "::error::$(git log -1 --format='%h %s' "$sha"): missing or mismatched Signed-off-by trailer"
+              failed=1
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "Run 'git commit -s' or 'git rebase --signoff main'. See CONTRIBUTING.md."
+            exit 1
+          fi
+          echo "All commits carry a matching Signed-off-by trailer."

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 StreamPulse contributors
+
 package scraper
 
 // Metric names follow the scraper.md design table: dotted, prometheus-flavored.

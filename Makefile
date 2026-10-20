@@ -1,4 +1,5 @@
-.PHONY: build run test lint clean install
+.PHONY: build run serve test test-cover lint fmt tidy deps license-check license-deps \
+	license-deps-report e2e e2e-watch e2e-verify install clean release help
 
 # Ensure go/vhs resolve even when the invoking shell omits Homebrew's bin dir
 # (non-interactive shells often do). A missing dir in PATH is harmless.
@@ -10,6 +11,8 @@ BUILD_DIR   := bin
 CMD_DIR     := cmd/streampulse
 VERSION     := $(shell git describe --tags --always --dirty 2>/dev/null || echo "v0.1.0-dev")
 LDFLAGS     := -ldflags="-s -w -X main.version=$(VERSION)"
+# Pinned: the license report feeds NOTICE, so its output must be reproducible.
+GO_LICENSES_VERSION := v2.0.1
 
 ## build: Build the binary
 build:
@@ -70,6 +73,24 @@ test-cover:
 ## lint: Run linter
 lint:
 	golangci-lint run ./...
+
+## license-check: Verify every Go file carries an Apache-2.0 SPDX header
+license-check:
+	go run ./tools/licensecheck
+
+# Paste the result into NOTICE when dependencies change.
+## license-deps: Verify module checksums, then print the third-party license report
+license-deps:
+	go mod verify
+	@$(MAKE) --no-print-directory license-deps-report
+
+## license-deps-report: Print license, version and source URL for every dependency
+license-deps-report:
+	@report=$$(mktemp) && \
+		go run github.com/google/go-licenses/v2@$(GO_LICENSES_VERSION) report \
+			--ignore github.com/pulsedev/streampulse ./... > $$report && \
+		sort -u $$report; \
+	status=$$?; rm -f $$report; exit $$status
 
 ## fmt: Format code
 fmt:

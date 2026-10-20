@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 StreamPulse contributors
+
 // Package cli provides the cobra command tree for StreamPulse.
 package cli
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 StreamPulse contributors
+
 // Package scraper collects Kafka cluster metrics and persists them through the
 // storage backend.
 package scraper

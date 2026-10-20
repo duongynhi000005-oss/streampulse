@@ -151,4 +151,7 @@ make lint         # → golangci-lint
 
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE).
+Apache 2.0 — see [LICENSE](LICENSE). Third-party component licenses are listed in
+[NOTICE](NOTICE). Contributions are accepted under the same license with a DCO
+sign-off; see [CONTRIBUTING.md](CONTRIBUTING.md).
+

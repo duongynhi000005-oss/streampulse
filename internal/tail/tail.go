@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 StreamPulse contributors
+
 // Package tail provides snapshot and live-follow reading of Kafka topics
 // without creating consumer groups. All reads are direct partition reads with
 // in-memory offsets, so nothing is written to __consumer_offsets and nothing

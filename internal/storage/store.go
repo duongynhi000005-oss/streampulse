@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 StreamPulse contributors
+
 // Package storage defines the MetricsStore interface and SQLite implementation.
 package storage
 

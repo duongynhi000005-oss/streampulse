@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 StreamPulse contributors
+
 // Package analytics computes growth, skew, and retention reports from the
 // persisted metrics store and the live Kafka cluster.
 package analytics

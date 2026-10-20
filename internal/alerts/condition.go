@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 StreamPulse contributors
+
 // Package alerts implements the StreamPulse alert engine: a tiny condition
 // language, a state machine over persisted alert_state rows, and the engine
 // that evaluates built-in and user-configured rules against scraped metrics.

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 StreamPulse contributors
+
 // Package tui provides the bubbletea terminal UI for StreamPulse.
 // Real-time k9s-style dashboard — auto-refreshes every 2 seconds.
 // Reads from the daemon's SQLite state.db. No manual reload needed.

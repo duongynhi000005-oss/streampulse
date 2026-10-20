@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 StreamPulse contributors
+
 // Package daemon implements `streampulse serve`: a 24/7 process that scrapes
 // Kafka metrics, persists and rolls them up, and exposes a Prometheus
 // endpoint, all sharing one lifecycle with graceful shutdown.
