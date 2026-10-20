@@ -408,6 +408,18 @@ type dlqReplayView struct {
 	Batches  int   `json:"batches"`
 }
 
+// replayDryRunLine summarizes a dry run. Candidates are the messages that
+// would be produced, i.e. every read message minus filtered and skipped ones;
+// ReplayResult.Replayed stays zero because nothing was produced.
+// dlqReplay is a test seam so the command output can be exercised without a
+// broker; it defaults to the real replay.
+var dlqReplay = dlq.Replay
+
+func replayDryRunLine(res *dlq.ReplayResult) string {
+	return fmt.Sprintf("would replay %d of %d messages (%d filtered, %d skipped)\n",
+		res.Total-res.Filtered-res.Skipped, res.Total, res.Filtered, res.Skipped)
+}
+
 func newDLQReplayCommand() *cobra.Command {
 	var (
 		topic        string
@@ -437,7 +449,7 @@ func newDLQReplayCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			res, err := dlq.Replay(cmd.Context(), dlq.ReplayOptions{
+			res, err := dlqReplay(cmd.Context(), dlq.ReplayOptions{
 				Brokers: cfg.Brokers, Topic: topic, DryRun: dryRun,
 				Limit: limit, OlderThan: older, Filter: filter, SkipExisting: skipExisting,
 			})
@@ -451,8 +463,7 @@ func newDLQReplayCommand() *cobra.Command {
 				})
 			}
 			if dryRun {
-				fmt.Fprintf(cmd.OutOrStdout(), "would replay %d of %d messages (%d filtered, %d skipped)\n",
-					res.Replayed, res.Total, res.Filtered, res.Skipped)
+				fmt.Fprint(cmd.OutOrStdout(), replayDryRunLine(res))
 			} else {
 				fmt.Fprintf(cmd.OutOrStdout(), "replayed %d of %d messages (%d filtered, %d skipped, %d failed) in %d batches\n",
 					res.Replayed, res.Total, res.Filtered, res.Skipped, res.Failed, res.Batches)
