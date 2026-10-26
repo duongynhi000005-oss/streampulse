@@ -410,13 +410,13 @@ func fetchCommitted(ctx context.Context, admin *kafka.Client, brokers []string, 
 	if len(partitions) == 0 {
 		return map[int]int64{}, nil
 	}
-	req := &kafka.OffsetFetchRequest{
-		GroupID: group,
-		Topics:  map[string][]int{topic: partitions},
-	}
 	var errs []error
 	for _, b := range brokers {
-		resp, err := admin.OffsetFetch(ctx, &kafka.OffsetFetchRequest{Addr: kafka.TCP(b), GroupID: group, Topics: req.Topics})
+		resp, err := admin.OffsetFetch(ctx, &kafka.OffsetFetchRequest{
+			Addr:    kafka.TCP(b),
+			GroupID: group,
+			Topics:  map[string][]int{topic: partitions},
+		})
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", b, err))
 			continue
