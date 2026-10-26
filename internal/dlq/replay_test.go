@@ -5,6 +5,7 @@ package dlq
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -103,4 +104,84 @@ func TestReplayHeaderPreserved(t *testing.T) {
 	assert.Equal(t, "true", headerValue(out, ReplayHeader))
 	assert.Equal(t, "42", headerValue(out, SourceOffsetHeader))
 	assert.Equal(t, "DB_TIMEOUT", headerValue(out, "error"), "original headers preserved")
+}
+
+
+type fakeOffsetCommitter struct {
+	fn func(ctx context.Context, req *kafka.OffsetCommitRequest) (*kafka.OffsetCommitResponse, error)
+}
+
+func (f *fakeOffsetCommitter) OffsetCommit(ctx context.Context, req *kafka.OffsetCommitRequest) (*kafka.OffsetCommitResponse, error) {
+	return f.fn(ctx, req)
+}
+
+func TestCommitBatchMultiBrokerFailover(t *testing.T) {
+	msgs := []kafka.Message{
+		{Topic: "payments.dlq", Partition: 0, Offset: 4},
+		{Topic: "payments.dlq", Partition: 0, Offset: 9},
+	}
+
+	t.Run("broker 1 partition error then broker 2 succeeds", func(t *testing.T) {
+		var attempts []string
+		committer := &fakeOffsetCommitter{
+			fn: func(_ context.Context, req *kafka.OffsetCommitRequest) (*kafka.OffsetCommitResponse, error) {
+				addr := req.Addr.String()
+				attempts = append(attempts, addr)
+				if addr == "broker1:9092" {
+					return &kafka.OffsetCommitResponse{
+						Topics: map[string][]kafka.OffsetCommitPartition{
+							"payments.dlq": {{Partition: 0, Error: kafka.NotCoordinatorForGroup}},
+						},
+					}, nil
+				}
+				return &kafka.OffsetCommitResponse{
+					Topics: map[string][]kafka.OffsetCommitPartition{
+						"payments.dlq": {{Partition: 0, Error: nil}},
+					},
+				}, nil
+			},
+		}
+
+		err := commitBatch(context.Background(), committer, []string{"broker1:9092", "broker2:9092", "broker3:9092"}, DefaultReplayGroup, msgs)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"broker1:9092", "broker2:9092"}, attempts, "stops after coordinator broker succeeds")
+	})
+
+	t.Run("broker 1 RPC error then broker 2 succeeds", func(t *testing.T) {
+		committer := &fakeOffsetCommitter{
+			fn: func(_ context.Context, req *kafka.OffsetCommitRequest) (*kafka.OffsetCommitResponse, error) {
+				if req.Addr.String() == "broker1:9092" {
+					return nil, errors.New("connection refused")
+				}
+				return &kafka.OffsetCommitResponse{
+					Topics: map[string][]kafka.OffsetCommitPartition{
+						"payments.dlq": {{Partition: 0, Error: nil}},
+					},
+				}, nil
+			},
+		}
+
+		err := commitBatch(context.Background(), committer, []string{"broker1:9092", "broker2:9092"}, DefaultReplayGroup, msgs)
+		require.NoError(t, err)
+	})
+
+	t.Run("all brokers fail joins all errors", func(t *testing.T) {
+		committer := &fakeOffsetCommitter{
+			fn: func(_ context.Context, req *kafka.OffsetCommitRequest) (*kafka.OffsetCommitResponse, error) {
+				if req.Addr.String() == "broker1:9092" {
+					return &kafka.OffsetCommitResponse{
+						Topics: map[string][]kafka.OffsetCommitPartition{
+							"payments.dlq": {{Partition: 0, Error: kafka.NotCoordinatorForGroup}},
+						},
+					}, nil
+				}
+				return nil, errors.New("broker2 unreachable")
+			},
+		}
+
+		err := commitBatch(context.Background(), committer, []string{"broker1:9092", "broker2:9092"}, DefaultReplayGroup, msgs)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, kafka.NotCoordinatorForGroup)
+		assert.Contains(t, err.Error(), "broker2 unreachable")
+	})
 }

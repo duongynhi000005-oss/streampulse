@@ -437,9 +437,14 @@ func fetchCommitted(ctx context.Context, admin *kafka.Client, brokers []string, 
 	return nil, fmt.Errorf("all brokers failed: %w", errors.Join(errs...))
 }
 
+// offsetCommitter commits consumer group offsets; *kafka.Client satisfies it.
+type offsetCommitter interface {
+	OffsetCommit(ctx context.Context, req *kafka.OffsetCommitRequest) (*kafka.OffsetCommitResponse, error)
+}
+
 // commitBatch commits the offsets of the produced messages (offset+1 per
 // partition) to the replay group, failing over across brokers.
-func commitBatch(ctx context.Context, admin *kafka.Client, brokers []string, group string, msgs []kafka.Message) error {
+func commitBatch(ctx context.Context, admin offsetCommitter, brokers []string, group string, msgs []kafka.Message) error {
 	if len(msgs) == 0 {
 		return nil
 	}
@@ -468,16 +473,18 @@ func commitBatch(ctx context.Context, admin *kafka.Client, brokers []string, gro
 			errs = append(errs, fmt.Errorf("%s: %w", b, err))
 			continue
 		}
+		var brokerErrs []error
 		for t, ps := range resp.Topics {
 			for _, p := range ps {
 				if p.Error != nil {
-					errs = append(errs, fmt.Errorf("commit %s partition %d: %w", t, p.Partition, p.Error))
+					brokerErrs = append(brokerErrs, fmt.Errorf("commit %s partition %d: %w", t, p.Partition, p.Error))
 				}
 			}
 		}
-		if len(errs) == 0 {
+		if len(brokerErrs) == 0 {
 			return nil
 		}
+		errs = append(errs, brokerErrs...)
 	}
 	return fmt.Errorf("commit to %q: %w", topic, errors.Join(errs...))
 }
