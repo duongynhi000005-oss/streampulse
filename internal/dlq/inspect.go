@@ -117,6 +117,9 @@ func readTail(ctx context.Context, broker, topic string, partition, limit int) (
 // readRange reads the messages of one partition in the offset range
 // [start, end), oldest-first.
 func readRange(ctx context.Context, broker, topic string, partition int, start, end int64) ([]kafka.Message, error) {
+	if end <= start {
+		return nil, nil
+	}
 	conn, err := kafka.DefaultDialer.DialLeader(ctx, "tcp", broker, topic, partition)
 	if err != nil {
 		return nil, err

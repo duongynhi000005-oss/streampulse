@@ -104,3 +104,13 @@ func TestReplayHeaderPreserved(t *testing.T) {
 	assert.Equal(t, "42", headerValue(out, SourceOffsetHeader))
 	assert.Equal(t, "DB_TIMEOUT", headerValue(out, "error"), "original headers preserved")
 }
+
+
+func TestCapPartitionEnd(t *testing.T) {
+	assert.Equal(t, int64(100000), capPartitionEnd(0, 100000, 0, 0), "no limit keeps high-watermark")
+	assert.Equal(t, int64(100), capPartitionEnd(0, 100000, 100, 0), "limit 100 on 100k DLQ caps read window to 100")
+	assert.Equal(t, int64(250), capPartitionEnd(200, 100000, 100, 50), "remaining limit (50) added to start (200)")
+	assert.Equal(t, int64(220), capPartitionEnd(200, 220, 100, 50), "capped at hw when hw < start+remaining")
+	assert.Equal(t, int64(200), capPartitionEnd(200, 100000, 100, 100), "exhausted limit returns start (empty window)")
+	assert.Equal(t, int64(50), capPartitionEnd(50, 30, 10, 0), "hw <= start returns start")
+}

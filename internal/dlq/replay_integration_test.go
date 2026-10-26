@@ -81,6 +81,28 @@ func TestReplayDryRunProducesNothing(t *testing.T) {
 	assert.Equal(t, int64(0), countMessages(t, brokers, orig), "dry-run produces nothing")
 }
 
+func TestReplayLimitCapsReadWindowAndProduceCount(t *testing.T) {
+	brokers := requireBroker(t)
+	dlq, orig := createScratchTopic(t, "replay-limit", 2)
+	var p0, p1 []kafka.Message
+	for i := 0; i < 10; i++ {
+		p0 = append(p0, kafka.Message{Key: []byte(fmt.Sprintf("p0-%d", i)), Value: []byte("v")})
+		p1 = append(p1, kafka.Message{Key: []byte(fmt.Sprintf("p1-%d", i)), Value: []byte("v")})
+	}
+	produceToPartition(t, brokers, dlq, 0, p0)
+	produceToPartition(t, brokers, dlq, 1, p1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	res, err := Replay(ctx, ReplayOptions{Brokers: brokers, Topic: dlq, Limit: 5, BatchSize: 2})
+	require.NoError(t, err)
+	assert.LessOrEqual(t, res.Total, int64(5), "res.Total capped by Limit")
+	assert.Equal(t, int64(5), res.Total)
+	assert.Equal(t, int64(5), res.Replayed)
+	assert.Equal(t, int64(5), countMessages(t, brokers, orig), "only Limit messages produced")
+}
+
 func TestReplayFilterSelectsSubset(t *testing.T) {
 	brokers := requireBroker(t)
 	dlq, orig := createScratchTopic(t, "replay-filter", 1)

@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strconv"
 	"strings"
@@ -143,25 +144,15 @@ func Replay(ctx context.Context, opts ReplayOptions) (*ReplayResult, error) {
 
 	res := &ReplayResult{DryRun: opts.DryRun}
 
-	var ranges []partitionRange
-	for _, pp := range positions {
-		msgs, err := readRange(ctx, opts.Brokers[0], opts.Topic, pp.partition, pp.start, pp.hw)
-		if err != nil {
-			return res, fmt.Errorf("dlq: replay %q: partition %d: %w", opts.Topic, pp.partition, err)
-		}
-		ranges = append(ranges, partitionRange{partition: pp.partition, msgs: msgs})
-	}
-
-	// With skip-existing, scan the DLQ for marker copies left by earlier
-	// replay runs (x-streampulse-source-offset header) and skip their keys.
-	markedKeys := make(map[string]struct{})
+	// With skip-existing, stream the DLQ for marker copies left by earlier
+	// replay runs (x-streampulse-source-offset header) without buffering full
+	// partition payloads in memory.
+	var markedKeys map[string]struct{}
 	if opts.SkipExisting {
-		for _, r := range ranges {
-			for _, m := range r.msgs {
-				if hasHeader(m, SourceOffsetHeader) {
-					markedKeys[string(m.Key)] = struct{}{}
-				}
-			}
+		var err error
+		markedKeys, err = scanMarkedKeys(ctx, opts.Brokers[0], opts.Topic, positions)
+		if err != nil {
+			return res, fmt.Errorf("dlq: replay %q: %w", opts.Topic, err)
 		}
 	}
 
@@ -169,58 +160,77 @@ func Replay(ctx context.Context, opts ReplayOptions) (*ReplayResult, error) {
 	read := 0
 	now := time.Now()
 
-	for _, r := range ranges {
-		for _, m := range r.msgs {
+	for _, pp := range positions {
+		if opts.Limit > 0 && read >= opts.Limit {
+			break
+		}
+		end := capPartitionEnd(pp.start, pp.hw, opts.Limit, read)
+		for cur := pp.start; cur < end; {
+			chunkEnd := cur + int64(batchSize)
+			if chunkEnd > end {
+				chunkEnd = end
+			}
+			msgs, err := readRange(ctx, opts.Brokers[0], opts.Topic, pp.partition, cur, chunkEnd)
+			if err != nil {
+				return res, fmt.Errorf("dlq: replay %q: partition %d: %w", opts.Topic, pp.partition, err)
+			}
+			if len(msgs) == 0 {
+				break
+			}
+			cur = chunkEnd
+
+			for _, m := range msgs {
+				if opts.Limit > 0 && read >= opts.Limit {
+					break
+				}
+				read++
+				res.Total++
+				if filter.exclude(m, now) {
+					res.Filtered++
+					continue
+				}
+				if opts.SkipExisting {
+					if hasHeader(m, SourceOffsetHeader) {
+						res.Skipped++
+						continue
+					}
+					if _, ok := markedKeys[string(m.Key)]; ok {
+						res.Skipped++
+						continue
+					}
+				}
+				if opts.DryRun {
+					if len(res.Sample) < 10 {
+						res.Sample = append(res.Sample, toMessage(opts.Topic, m))
+					}
+					continue
+				}
+				if err := w.WriteMessages(ctx, replayMessage(original, m)); err != nil {
+					res.Failed++
+					if len(batch) > 0 {
+						if ferr := flushBatch(ctx, opts, admin, group, batch); ferr != nil {
+							return res, errors.Join(
+								fmt.Errorf("dlq: replay %q: produce to %q: %w", opts.Topic, original, err),
+								fmt.Errorf("dlq: replay %q: %w", opts.Topic, ferr),
+							)
+						}
+						res.Batches++
+					}
+					return res, fmt.Errorf("dlq: replay %q: produce to %q: %w", opts.Topic, original, err)
+				}
+				res.Replayed++
+				batch = append(batch, m)
+				if len(batch) >= batchSize {
+					if err := flushBatch(ctx, opts, admin, group, batch); err != nil {
+						return res, fmt.Errorf("dlq: replay %q: %w", opts.Topic, err)
+					}
+					res.Batches++
+					batch = nil
+				}
+			}
 			if opts.Limit > 0 && read >= opts.Limit {
 				break
 			}
-			read++
-			res.Total++
-			if filter.exclude(m, now) {
-				res.Filtered++
-				continue
-			}
-			if opts.SkipExisting {
-				if hasHeader(m, SourceOffsetHeader) {
-					res.Skipped++
-					continue
-				}
-				if _, ok := markedKeys[string(m.Key)]; ok {
-					res.Skipped++
-					continue
-				}
-			}
-			if opts.DryRun {
-				if len(res.Sample) < 10 {
-					res.Sample = append(res.Sample, toMessage(opts.Topic, m))
-				}
-				continue
-			}
-			if err := w.WriteMessages(ctx, replayMessage(original, m)); err != nil {
-				res.Failed++
-				if len(batch) > 0 {
-					if ferr := flushBatch(ctx, opts, admin, group, batch); ferr != nil {
-						return res, errors.Join(
-							fmt.Errorf("dlq: replay %q: produce to %q: %w", opts.Topic, original, err),
-							fmt.Errorf("dlq: replay %q: %w", opts.Topic, ferr),
-						)
-					}
-					res.Batches++
-				}
-				return res, fmt.Errorf("dlq: replay %q: produce to %q: %w", opts.Topic, original, err)
-			}
-			res.Replayed++
-			batch = append(batch, m)
-			if len(batch) >= batchSize {
-				if err := flushBatch(ctx, opts, admin, group, batch); err != nil {
-					return res, fmt.Errorf("dlq: replay %q: %w", opts.Topic, err)
-				}
-				res.Batches++
-				batch = nil
-			}
-		}
-		if opts.Limit > 0 && read >= opts.Limit {
-			break
 		}
 	}
 	if len(batch) > 0 {
@@ -232,10 +242,75 @@ func Replay(ctx context.Context, opts ReplayOptions) (*ReplayResult, error) {
 	return res, nil
 }
 
-// partitionRange is the messages read from one partition of the DLQ.
-type partitionRange struct {
-	partition int
-	msgs      []kafka.Message
+// capPartitionEnd returns the upper offset bound to read from a partition
+// given [start, hw), an optional replay limit, and the number of messages
+// already read across earlier partitions.
+func capPartitionEnd(start, hw int64, limit, read int) int64 {
+	if hw <= start {
+		return start
+	}
+	if limit <= 0 {
+		return hw
+	}
+	rem := int64(limit - read)
+	if rem <= 0 {
+		return start
+	}
+	if start+rem < hw {
+		return start + rem
+	}
+	return hw
+}
+
+// scanMarkedKeys streams each partition in [first, hw) and records message
+// keys that carry SourceOffsetHeader without buffering full partition slices.
+func scanMarkedKeys(ctx context.Context, broker, topic string, positions []partPosition) (map[string]struct{}, error) {
+	marked := make(map[string]struct{})
+	for _, pp := range positions {
+		if pp.hw <= 0 {
+			continue
+		}
+		if err := scanPartitionMarkedKeys(ctx, broker, topic, pp.partition, pp.hw, marked); err != nil {
+			return nil, fmt.Errorf("partition %d: %w", pp.partition, err)
+		}
+	}
+	return marked, nil
+}
+
+func scanPartitionMarkedKeys(ctx context.Context, broker, topic string, partition int, hw int64, marked map[string]struct{}) error {
+	conn, err := kafka.DefaultDialer.DialLeader(ctx, "tcp", broker, topic, partition)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	first, err := conn.ReadFirstOffset()
+	if err != nil {
+		return err
+	}
+	if first >= hw {
+		return nil
+	}
+	if _, err := conn.Seek(first, kafka.SeekAbsolute); err != nil {
+		return err
+	}
+
+	batch := conn.ReadBatchWith(kafka.ReadBatchConfig{MinBytes: 1, MaxBytes: 10e6})
+	defer batch.Close()
+
+	for i := first; i < hw; i++ {
+		m, err := batch.ReadMessage()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return err
+		}
+		if hasHeader(m, SourceOffsetHeader) {
+			marked[string(m.Key)] = struct{}{}
+		}
+	}
+	return nil
 }
 
 // flushBatch marks the produced messages on the DLQ when skip-existing is on,
