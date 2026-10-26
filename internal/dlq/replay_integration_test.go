@@ -146,6 +146,42 @@ func TestReplaySkipExistingNoDuplicates(t *testing.T) {
 	assert.Equal(t, int64(5), countMessages(t, brokers, orig), "no duplicates on the original topic")
 }
 
+func TestReplaySkipExistingWithLimitNoDuplicates(t *testing.T) {
+	brokers := requireBroker(t)
+	dlq, orig := createScratchTopic(t, "replay-skip-limit", 1)
+	produceToPartition(t, brokers, dlq, 0, []kafka.Message{
+		{Key: []byte("k0"), Value: []byte("v0")},
+		{Key: []byte("k1"), Value: []byte("v1")},
+		{Key: []byte("k2"), Value: []byte("v2")},
+		{Key: []byte("k3"), Value: []byte("v3")},
+		{Key: []byte("k4"), Value: []byte("v4")},
+		{Key: []byte("k5"), Value: []byte("v5")},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	first, err := Replay(ctx, ReplayOptions{Brokers: brokers, Topic: dlq, SkipExisting: true})
+	require.NoError(t, err)
+	assert.Equal(t, int64(6), first.Replayed)
+
+	// Marker copies sit at offsets 6..11, beyond Limit: 3. A subsequent replay
+	// with a limit smaller than the DLQ must still scan the full topic for
+	// markers and produce zero duplicates.
+	second, err := Replay(ctx, ReplayOptions{
+		Brokers:      brokers,
+		Topic:        dlq,
+		SkipExisting: true,
+		Limit:        3,
+		groupID:      fmt.Sprintf("streampulse-replay-limit-verify-%d", time.Now().UnixNano()),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), second.Total)
+	assert.Equal(t, int64(0), second.Replayed)
+	assert.Equal(t, int64(3), second.Skipped)
+	assert.Equal(t, int64(6), countMessages(t, brokers, orig), "no message produced twice when --limit < DLQ size")
+}
+
 func TestReplayOriginalMissingErrors(t *testing.T) {
 	brokers := requireBroker(t)
 	dlq := createScratchDlqOnly(t, "replay-missing")

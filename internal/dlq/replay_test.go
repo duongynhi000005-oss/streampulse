@@ -104,3 +104,44 @@ func TestReplayHeaderPreserved(t *testing.T) {
 	assert.Equal(t, "42", headerValue(out, SourceOffsetHeader))
 	assert.Equal(t, "DB_TIMEOUT", headerValue(out, "error"), "original headers preserved")
 }
+
+
+func TestRecordMarkedKeyScansBeyondLimitWindow(t *testing.T) {
+	// Simulate 5 original messages at offsets 0..4 and 5 marker copies at
+	// offsets 5..9 (past a Limit of 3). Full-topic marker scanning visits all
+	// 10 messages so keys k0..k2 inside the [0, 3) window are recognized as
+	// already replayed.
+	fullPartition := []kafka.Message{
+		{Offset: 0, Key: []byte("k0"), Value: []byte("v0")},
+		{Offset: 1, Key: []byte("k1"), Value: []byte("v1")},
+		{Offset: 2, Key: []byte("k2"), Value: []byte("v2")},
+		{Offset: 3, Key: []byte("k3"), Value: []byte("v3")},
+		{Offset: 4, Key: []byte("k4"), Value: []byte("v4")},
+		replayMessage("payments.dlq", kafka.Message{Offset: 0, Key: []byte("k0"), Value: []byte("v0")}),
+		replayMessage("payments.dlq", kafka.Message{Offset: 1, Key: []byte("k1"), Value: []byte("v1")}),
+		replayMessage("payments.dlq", kafka.Message{Offset: 2, Key: []byte("k2"), Value: []byte("v2")}),
+		replayMessage("payments.dlq", kafka.Message{Offset: 3, Key: []byte("k3"), Value: []byte("v3")}),
+		replayMessage("payments.dlq", kafka.Message{Offset: 4, Key: []byte("k4"), Value: []byte("v4")}),
+	}
+
+	marked := make(map[string]struct{})
+	for _, m := range fullPartition {
+		recordMarkedKey(m, marked)
+	}
+
+	limitWindow := fullPartition[:3]
+	var replayed, skipped int
+	for _, m := range limitWindow {
+		if hasHeader(m, SourceOffsetHeader) {
+			skipped++
+			continue
+		}
+		if _, ok := marked[string(m.Key)]; ok {
+			skipped++
+			continue
+		}
+		replayed++
+	}
+	assert.Equal(t, 0, replayed, "messages with markers past Limit must not be replayed again")
+	assert.Equal(t, 3, skipped, "all messages in the limited window are skipped")
+}

@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strconv"
 	"strings"
@@ -143,26 +144,40 @@ func Replay(ctx context.Context, opts ReplayOptions) (*ReplayResult, error) {
 
 	res := &ReplayResult{DryRun: opts.DryRun}
 
+	// With skip-existing, scan the full DLQ topic for marker copies left by
+	// earlier replay runs (x-streampulse-source-offset header) independently
+	// of Limit so markers sitting past the read window are still recognized.
+	var markedKeys map[string]struct{}
+	if opts.SkipExisting {
+		var err error
+		markedKeys, err = scanMarkedKeys(ctx, opts.Brokers[0], opts.Topic, positions)
+		if err != nil {
+			return res, fmt.Errorf("dlq: replay %q: %w", opts.Topic, err)
+		}
+	}
+
 	var ranges []partitionRange
+	var planned int64
 	for _, pp := range positions {
-		msgs, err := readRange(ctx, opts.Brokers[0], opts.Topic, pp.partition, pp.start, pp.hw)
+		end := pp.hw
+		if opts.Limit > 0 {
+			rem := int64(opts.Limit) - planned
+			if rem <= 0 {
+				break
+			}
+			if pp.start+rem < end {
+				end = pp.start + rem
+			}
+		}
+		if end <= pp.start {
+			continue
+		}
+		msgs, err := readRange(ctx, opts.Brokers[0], opts.Topic, pp.partition, pp.start, end)
 		if err != nil {
 			return res, fmt.Errorf("dlq: replay %q: partition %d: %w", opts.Topic, pp.partition, err)
 		}
+		planned += int64(len(msgs))
 		ranges = append(ranges, partitionRange{partition: pp.partition, msgs: msgs})
-	}
-
-	// With skip-existing, scan the DLQ for marker copies left by earlier
-	// replay runs (x-streampulse-source-offset header) and skip their keys.
-	markedKeys := make(map[string]struct{})
-	if opts.SkipExisting {
-		for _, r := range ranges {
-			for _, m := range r.msgs {
-				if hasHeader(m, SourceOffsetHeader) {
-					markedKeys[string(m.Key)] = struct{}{}
-				}
-			}
-		}
 	}
 
 	var batch []kafka.Message
@@ -236,6 +251,61 @@ func Replay(ctx context.Context, opts ReplayOptions) (*ReplayResult, error) {
 type partitionRange struct {
 	partition int
 	msgs      []kafka.Message
+}
+
+// scanMarkedKeys scans the full offset range [0, hw) of every partition for
+// messages carrying SourceOffsetHeader, independent of any replay Limit.
+func scanMarkedKeys(ctx context.Context, broker, topic string, positions []partPosition) (map[string]struct{}, error) {
+	marked := make(map[string]struct{})
+	for _, pp := range positions {
+		if pp.hw <= 0 {
+			continue
+		}
+		if err := scanPartitionMarkedKeys(ctx, broker, topic, pp.partition, pp.hw, marked); err != nil {
+			return nil, fmt.Errorf("partition %d: %w", pp.partition, err)
+		}
+	}
+	return marked, nil
+}
+
+func scanPartitionMarkedKeys(ctx context.Context, broker, topic string, partition int, hw int64, marked map[string]struct{}) error {
+	conn, err := kafka.DefaultDialer.DialLeader(ctx, "tcp", broker, topic, partition)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	first, err := conn.ReadFirstOffset()
+	if err != nil {
+		return err
+	}
+	if first >= hw {
+		return nil
+	}
+	if _, err := conn.Seek(first, kafka.SeekAbsolute); err != nil {
+		return err
+	}
+
+	batch := conn.ReadBatchWith(kafka.ReadBatchConfig{MinBytes: 1, MaxBytes: 10e6})
+	defer batch.Close()
+
+	for i := first; i < hw; i++ {
+		m, err := batch.ReadMessage()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return err
+		}
+		recordMarkedKey(m, marked)
+	}
+	return nil
+}
+
+func recordMarkedKey(m kafka.Message, marked map[string]struct{}) {
+	if hasHeader(m, SourceOffsetHeader) {
+		marked[string(m.Key)] = struct{}{}
+	}
 }
 
 // flushBatch marks the produced messages on the DLQ when skip-existing is on,
